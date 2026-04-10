@@ -4,3 +4,5 @@ build/
 *.xcworkspace
 *.xcodeproj
 !project.yml
+.edge-headless/
+web-prototype/assets/app-preview.png

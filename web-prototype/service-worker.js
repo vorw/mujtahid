@@ -1,4 +1,4 @@
-const CACHE_NAME = "hadithapp-prototype-v1";
+const CACHE_NAME = "mujtahid-v2";
 const OFFLINE_PAGE = new URL("./index.html", self.location).href;
 const APP_SHELL = [
   "./",
@@ -61,6 +61,28 @@ self.addEventListener("fetch", (event) => {
           }
           return new Response("Offline", { status: 503, statusText: "Offline" });
         });
+    })
+  );
+});
+
+self.addEventListener("notificationclick", (event) => {
+  const targetUrl = event.notification?.data?.url || "./";
+  event.notification.close();
+
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
+      for (const client of clients) {
+        if ("focus" in client) {
+          client.navigate(targetUrl);
+          return client.focus();
+        }
+      }
+
+      if (self.clients.openWindow) {
+        return self.clients.openWindow(targetUrl);
+      }
+
+      return undefined;
     })
   );
 });
