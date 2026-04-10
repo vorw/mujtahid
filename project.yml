@@ -1,0 +1,87 @@
+name: HadithApp
+options:
+  bundleIdPrefix: com.example
+settings:
+  base:
+    IPHONEOS_DEPLOYMENT_TARGET: 17.0
+    SWIFT_VERSION: 5.0
+    DEVELOPMENT_TEAM: ""
+targets:
+  HadithCore:
+    type: framework
+    platform: iOS
+    sources:
+      - path: HadithCore
+        excludes:
+          - Resources
+    resources:
+      - path: HadithCore/Resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.hadithapp.core
+        GENERATE_INFOPLIST_FILE: YES
+        SKIP_INSTALL: YES
+  HadithApp:
+    type: application
+    platform: iOS
+    sources:
+      - path: HadithApp
+        excludes:
+          - Resources
+          - Supporting
+    resources:
+      - path: HadithApp/Resources
+    info:
+      path: HadithApp/Supporting/Info.plist
+    entitlements:
+      path: HadithApp/Supporting/HadithApp.entitlements
+    dependencies:
+      - target: HadithCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.hadithapp
+        PRODUCT_NAME: HadithApp
+        CODE_SIGN_ENTITLEMENTS: HadithApp/Supporting/HadithApp.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        INFOPLIST_FILE: HadithApp/Supporting/Info.plist
+  HadithWidgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: HadithWidgets
+        excludes:
+          - Supporting
+    info:
+      path: HadithWidgets/Supporting/Info.plist
+    entitlements:
+      path: HadithWidgets/Supporting/HadithWidgets.entitlements
+    dependencies:
+      - target: HadithCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.hadithapp.widgets
+        PRODUCT_NAME: HadithWidgets
+        CODE_SIGN_ENTITLEMENTS: HadithWidgets/Supporting/HadithWidgets.entitlements
+        INFOPLIST_FILE: HadithWidgets/Supporting/Info.plist
+        SKIP_INSTALL: YES
+  HadithAppTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: HadithAppTests
+    dependencies:
+      - target: HadithCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.hadithapp.tests
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  HadithApp:
+    build:
+      targets:
+        HadithApp: all
+        HadithWidgets: [run, archive]
+        HadithAppTests: [test]
+    test:
+      targets:
+        - HadithAppTests

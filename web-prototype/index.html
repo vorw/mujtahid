@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0f3f38">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="HadithApp">
+  <meta name="format-detection" content="telephone=no">
+  <title>HadithApp Prototype</title>
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" type="image/png" sizes="192x192" href="./assets/icon-192.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="./assets/icon-180.png">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="ambient ambient-one"></div>
+  <div class="ambient ambient-two"></div>
+  <main class="stage">
+    <section class="overview">
+      <p class="eyebrow">Browser Prototype</p>
+      <h1>Hadith-first iPhone experience, tested free on Windows.</h1>
+      <p class="lead">
+        This web prototype mirrors the native app structure: daily hadith, search, verification, qibla,
+        prayer times, widget previews, and a visible trust center.
+      </p>
+      <div class="overview-grid">
+        <article class="overview-card">
+          <span>Trust-first</span>
+          <strong>Bukhari + Muslim</strong>
+          <p>Canonical hadith content with BinBaz and Dorar positioned clearly.</p>
+        </article>
+        <article class="overview-card">
+          <span>Utilities</span>
+          <strong>Prayer + Qibla</strong>
+          <p>Region-aware prayer times and a qibla compass flow for behavior testing.</p>
+        </article>
+        <article class="overview-card">
+          <span>Goal</span>
+          <strong>Test the feel</strong>
+          <p>Use this to refine UX before spending money on native simulator work.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="phone-frame">
+      <div class="phone-shadow"></div>
+      <div class="phone">
+        <header class="phone-topbar">
+          <div class="status-time">9:41</div>
+          <div class="dynamic-island"></div>
+          <div class="status-meta">LTE 100%</div>
+        </header>
+        <div id="app" class="app-root" aria-live="polite"></div>
+      </div>
+    </section>
+  </main>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

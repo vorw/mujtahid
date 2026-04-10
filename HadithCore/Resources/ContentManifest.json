@@ -1,0 +1,17 @@
+{
+  "version" : "1.0.0-seed",
+  "updatedAt" : "2026-04-10T00:00:00Z",
+  "canonicalCollections" : [
+    "Sahih al-Bukhari",
+    "Sahih Muslim"
+  ],
+  "verificationSources" : [
+    "BinBaz",
+    "Dorar"
+  ],
+  "notes" : [
+    "Seed bundle included for local development and architecture validation.",
+    "Production rollout requires a larger editorially reviewed import before release.",
+    "BinBaz is treated as a trust reference and Dorar as an operational verification and methodology layer."
+  ]
+}
