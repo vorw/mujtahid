@@ -1,0 +1,52 @@
+[
+  {
+    "id": "bukhari-1",
+    "collection": "bukhari",
+    "collectionLabel": "صحيح البخاري",
+    "hadithNumber": 1,
+    "narratorArabic": "عمر بن الخطاب",
+    "arabicText": "إِنَّمَا الْأَعْمَالُ بِالنِّيَّاتِ، وَإِنَّمَا لِكُلِّ امْرِئٍ مَا نَوَى.",
+    "englishText": "Actions are judged by intentions, and every person will get what they intended.",
+    "sourceQuery": "إِنَّمَا الْأَعْمَالُ بِالنِّيَّاتِ، وَإِنَّمَا لِكُلِّ امْرِئٍ مَا نَوَى."
+  },
+  {
+    "id": "bukhari-8",
+    "collection": "bukhari",
+    "collectionLabel": "صحيح البخاري",
+    "hadithNumber": 8,
+    "narratorArabic": "عبدالله بن عمر",
+    "arabicText": "بُنِيَ الإِسْلاَمُ عَلَى خَمْسٍ: شَهَادَةِ أَنْ لاَ إِلَهَ إِلاَّ اللَّهُ وَأَنَّ مُحَمَّدًا رَسُولُ اللَّهِ، وَإِقَامِ الصَّلَاةِ، وَإِيتَاءِ الزَّكَاةِ، وَالْحَجِّ، وَصَوْمِ رَمَضَانَ.",
+    "englishText": "Islam is built on five: bearing witness that there is no god but Allah and that Muhammad is the Messenger of Allah, establishing prayer, giving zakah, Hajj, and fasting Ramadan.",
+    "sourceQuery": "بُنِيَ الإِسْلاَمُ عَلَى خَمْسٍ: شَهَادَةِ أَنْ لاَ إِلَهَ إِلاَّ اللَّهُ وَأَنَّ مُحَمَّدًا رَسُولُ اللَّهِ، وَإِقَامِ الصَّلَاةِ، وَإِيتَاءِ الزَّكَاةِ، وَالْحَجِّ، وَصَوْمِ رَمَضَانَ."
+  },
+  {
+    "id": "muslim-16",
+    "collection": "muslim",
+    "collectionLabel": "صحيح مسلم",
+    "hadithNumber": 16,
+    "narratorArabic": "عبدالله بن عمر",
+    "arabicText": "بُنِيَ الإِسْلاَمُ عَلَى خَمْسٍ.",
+    "englishText": "Islam is built upon five.",
+    "sourceQuery": "بُنِيَ الإِسْلاَمُ عَلَى خَمْسٍ."
+  },
+  {
+    "id": "bukhari-13",
+    "collection": "bukhari",
+    "collectionLabel": "صحيح البخاري",
+    "hadithNumber": 13,
+    "narratorArabic": "أنس بن مالك",
+    "arabicText": "لاَ يُؤْمِنُ أَحَدُكُمْ حَتَّى يُحِبَّ لأَخِيهِ مَا يُحِبُّ لِنَفْسِهِ.",
+    "englishText": "None of you truly believes until he loves for his brother what he loves for himself.",
+    "sourceQuery": "لاَ يُؤْمِنُ أَحَدُكُمْ حَتَّى يُحِبَّ لأَخِيهِ مَا يُحِبُّ لِنَفْسِهِ."
+  },
+  {
+    "id": "muslim-2609",
+    "collection": "muslim",
+    "collectionLabel": "صحيح مسلم",
+    "hadithNumber": 2609,
+    "narratorArabic": "أبو هريرة",
+    "arabicText": "لَيْسَ الشَّدِيدُ بِالصُّرَعَةِ، إِنَّمَا الشَّدِيدُ الَّذِي يَمْلِكُ نَفْسَهُ عِنْدَ الْغَضَبِ.",
+    "englishText": "The strong person is not the one who can overpower others, but the one who controls himself when angry.",
+    "sourceQuery": "لَيْسَ الشَّدِيدُ بِالصُّرَعَةِ، إِنَّمَا الشَّدِيدُ الَّذِي يَمْلِكُ نَفْسَهُ عِنْدَ الْغَضَبِ."
+  }
+]

@@ -1,4 +1,4 @@
-const CACHE_NAME = "mujtahid-v2";
+const CACHE_NAME = "mujtahid-v3";
 const OFFLINE_PAGE = new URL("./index.html", self.location).href;
 const APP_SHELL = [
   "./",
@@ -9,8 +9,7 @@ const APP_SHELL = [
   "./assets/icon-180.png",
   "./assets/icon-192.png",
   "./assets/icon-512.png",
-  "../HadithCore/Resources/SeedHadith.json",
-  "../HadithCore/Resources/ContentManifest.json"
+  "./data/featured-hadiths.json"
 ];
 
 self.addEventListener("install", (event) => {

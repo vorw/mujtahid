@@ -1,19 +1,12 @@
 const STORAGE_KEYS = {
-  bookmarks: "mujtahid.bookmarks",
-  notifications: "mujtahid.notifications",
-  searchCollection: "mujtahid.search-collection"
+  favorites: "mujtahid.favorites",
+  notifications: "mujtahid.notifications"
 };
 
-const COLLECTIONS = [
-  { id: "all", label: "All" },
-  { id: "bukhari", label: "Bukhari" },
-  { id: "muslim", label: "Muslim" }
-];
-
 const REMINDER_OPTIONS = [
-  { id: "daily", label: "Daily", intervalMs: 24 * 60 * 60 * 1000 },
-  { id: "threeDays", label: "Every 3 days", intervalMs: 3 * 24 * 60 * 60 * 1000 },
-  { id: "weekly", label: "Weekly", intervalMs: 7 * 24 * 60 * 60 * 1000 }
+  { id: "daily", label: "يوميًا", intervalMs: 24 * 60 * 60 * 1000 },
+  { id: "threeDays", label: "كل 3 أيام", intervalMs: 3 * 24 * 60 * 60 * 1000 },
+  { id: "weekly", label: "أسبوعيًا", intervalMs: 7 * 24 * 60 * 60 * 1000 }
 ];
 
 const DEFAULT_NOTIFICATION_SETTINGS = {
@@ -25,25 +18,29 @@ const DEFAULT_NOTIFICATION_SETTINGS = {
 const state = {
   loading: true,
   error: "",
-  records: [],
-  manifest: null,
   tab: "home",
   sheet: null,
+  feed: [],
+  activeFeedIndex: 0,
+  favorites: loadJSON(STORAGE_KEYS.favorites, []),
   searchQuery: "",
-  searchCollection: loadValue(STORAGE_KEYS.searchCollection, "all"),
-  verifyText: "",
-  bookmarks: loadJSON(STORAGE_KEYS.bookmarks, []),
+  searching: false,
+  searchError: "",
+  searchResults: [],
+  lastSearch: "",
   notifications: { ...DEFAULT_NOTIFICATION_SETTINGS, ...loadJSON(STORAGE_KEYS.notifications, DEFAULT_NOTIFICATION_SETTINGS) },
   notificationPermission: notificationPermissionState(),
+  standalone: isStandalone(),
   toast: "",
   now: new Date(),
-  standalone: isStandalone(),
   launchHadithId: new URLSearchParams(window.location.search).get("hadith") || ""
 };
 
 const root = document.getElementById("app");
 let toastTimer = null;
 let notificationTimer = null;
+let homeObserver = null;
+let launchScrollPending = false;
 
 applyStandaloneClass();
 attachEventHandlers();
@@ -51,22 +48,31 @@ initialize();
 
 async function initialize() {
   registerServiceWorker();
-  try {
-    const [recordsResponse, manifestResponse] = await Promise.all([
-      fetch("../HadithCore/Resources/SeedHadith.json"),
-      fetch("../HadithCore/Resources/ContentManifest.json")
-    ]);
 
-    if (!recordsResponse.ok || !manifestResponse.ok) {
-      throw new Error("The hadith bundle could not be loaded.");
+  try {
+    const response = await fetch("./data/featured-hadiths.json");
+    if (!response.ok) {
+      throw new Error("تعذر تحميل بطاقات الأحاديث.");
     }
 
-    state.records = await recordsResponse.json();
-    state.manifest = await manifestResponse.json();
-    consumeLaunchHadith();
+    state.feed = await response.json();
+
+    if (!state.feed.length) {
+      throw new Error("لا توجد أحاديث جاهزة للعرض.");
+    }
+
+    if (state.launchHadithId) {
+      const launchIndex = state.feed.findIndex((item) => item.id === state.launchHadithId);
+      if (launchIndex >= 0) {
+        state.activeFeedIndex = launchIndex;
+        launchScrollPending = true;
+      }
+      clearLaunchQuery();
+    }
+
     await maybeSendDueReminder();
   } catch (error) {
-    state.error = error.message || "The prototype failed to load.";
+    state.error = error.message || "تعذر تشغيل التطبيق الآن.";
   } finally {
     state.loading = false;
     render();
@@ -85,7 +91,7 @@ function attachEventHandlers() {
       return;
     }
 
-    const { action, value, id } = actionTarget.dataset;
+    const { action, id, value } = actionTarget.dataset;
 
     switch (action) {
       case "switch-tab":
@@ -93,50 +99,47 @@ function attachEventHandlers() {
         closeSheet();
         render();
         return;
-      case "open-sheet":
-        state.sheet = { type: value, id: id || "" };
+      case "open-search":
+        state.tab = "search";
+        render();
+        return;
+      case "open-notifications":
+        state.sheet = { type: "notifications" };
         render();
         return;
       case "close-sheet":
         closeSheet();
         render();
         return;
-      case "open-hadith":
-        state.sheet = { type: "hadith", id };
+      case "toggle-favorite":
+        toggleFavorite(id);
         render();
         return;
-      case "toggle-bookmark":
-        toggleBookmark(id);
+      case "open-source":
+        openSource(id ? locateRecord(id)?.sourceQuery : value);
+        return;
+      case "share-hadith":
+        await shareHadith(locateRecord(id));
         render();
         return;
-      case "jump-collection":
-        state.searchCollection = value;
-        state.tab = "search";
-        persistAppState();
+      case "copy-hadith":
+        await copyHadith(locateRecord(id));
         render();
         return;
-      case "set-collection":
-        state.searchCollection = value;
-        persistAppState();
-        render();
+      case "search-submit":
+        await runSearch(state.searchQuery);
         return;
       case "clear-search":
         state.searchQuery = "";
+        state.searchResults = [];
+        state.searchError = "";
+        state.lastSearch = "";
         render();
         return;
-      case "apply-search":
+      case "quick-search":
+        state.searchQuery = value || "";
         render();
-        return;
-      case "fill-daily-hadith":
-        state.verifyText = featuredHadith(state.records, state.now)?.arabicText || "";
-        render();
-        return;
-      case "apply-verify":
-        render();
-        return;
-      case "open-notifications":
-        state.sheet = { type: "notifications", id: "" };
-        render();
+        await runSearch(state.searchQuery);
         return;
       case "request-notifications":
         await requestNotificationPermission();
@@ -149,7 +152,7 @@ function attachEventHandlers() {
       case "set-frequency":
         state.notifications.frequency = value;
         persistAppState();
-        showToast(`Reminder rate: ${reminderOption(value).label}`);
+        showToast(`تم ضبط التذكير: ${reminderOption(value).label}`);
         render();
         return;
       case "send-test-notification":
@@ -165,16 +168,12 @@ function attachEventHandlers() {
     if (event.target.id === "search-field") {
       state.searchQuery = event.target.value;
     }
-
-    if (event.target.id === "verify-field") {
-      state.verifyText = event.target.value;
-    }
   });
 
-  root.addEventListener("keydown", (event) => {
+  root.addEventListener("keydown", async (event) => {
     if (event.key === "Enter" && event.target.id === "search-field") {
       event.preventDefault();
-      render();
+      await runSearch(state.searchQuery);
     }
   });
 
@@ -192,285 +191,258 @@ function attachEventHandlers() {
     render();
   });
 
-  window.matchMedia("(display-mode: standalone)").addEventListener?.("change", () => {
-    state.standalone = isStandalone();
-    applyStandaloneClass();
-    render();
-  });
-
   notificationTimer = window.setInterval(async () => {
     state.now = new Date();
     await maybeSendDueReminder();
   }, 60000);
 }
-
 function render() {
   applyStandaloneClass();
 
   if (state.loading) {
-    root.innerHTML = `
-      <div class="screen-shell">
-        <section class="screen">
-          <header class="top-header">
-            <div>
-              <p class="kicker">Loading</p>
-              <h1 class="large-title">مجتهد</h1>
-              <p class="support-copy">Preparing the hadith reader.</p>
-            </div>
-          </header>
-          <article class="reading-card">
-            <p class="card-label">Loading hadith bundle</p>
-            <h2 class="card-title">Opening the prototype...</h2>
-            <p class="card-copy">Fetching the seed bundle, trust references, and reminder settings.</p>
-          </article>
-        </section>
-      </div>
-    `;
+    root.innerHTML = renderLoadingState();
     return;
   }
 
   if (state.error) {
-    root.innerHTML = `
-      <div class="screen-shell">
-        <section class="screen">
-          <header class="top-header">
-            <div>
-              <p class="kicker">Error</p>
-              <h1 class="large-title">مجتهد</h1>
-              <p class="support-copy">The prototype could not start.</p>
-            </div>
-          </header>
-          <article class="reading-card">
-            <p class="card-label">Data</p>
-            <h2 class="card-title">The hadith bundle did not load.</h2>
-            <p class="card-copy">${escapeHtml(state.error)}</p>
-          </article>
-        </section>
-      </div>
-    `;
+    root.innerHTML = renderErrorState();
     return;
   }
 
   root.innerHTML = `
-    <div class="screen-shell">
-      ${renderScreen()}
+    <div class="app-shell">
+      ${state.tab === "home" ? renderHomeScreen() : renderSearchScreen()}
+      ${renderFloatingNav()}
+      ${state.sheet ? renderSheet() : ""}
+      ${state.toast ? `<div class="toast">${escapeHtml(state.toast)}</div>` : ""}
     </div>
-    <nav class="tabbar" aria-label="Primary tabs">
-      ${renderTabButton("home", "Home", renderIcon("home"))}
-      ${renderTabButton("search", "Search", renderIcon("search"))}
-      ${renderTabButton("verify", "Verify", renderIcon("verify"))}
-      ${renderTabButton("library", "Library", renderIcon("library"))}
-    </nav>
-    ${state.sheet ? renderSheet() : ""}
-    ${state.toast ? `<div class="toast">${escapeHtml(state.toast)}</div>` : ""}
+  `;
+
+  initializeHomeObserver();
+}
+
+function renderLoadingState() {
+  return `
+    <section class="search-screen">
+      <div class="search-stack">
+        <article class="search-card">
+          <div class="notification-head">
+            <div class="header-logo">${renderMark()}</div>
+            <div>
+              <p class="search-kicker">مجتهد</p>
+              <h1 class="search-title">جارٍ تجهيز الواجهة</h1>
+              <p class="search-copy">نرتب بطاقات الأحاديث لتظهر كتجربة قريبة من التطبيق الحقيقي.</p>
+            </div>
+          </div>
+        </article>
+      </div>
+    </section>
   `;
 }
 
-function renderScreen() {
-  switch (state.tab) {
-    case "home":
-      return renderHomeScreen();
-    case "search":
-      return renderSearchScreen();
-    case "verify":
-      return renderVerifyScreen();
-    case "library":
-      return renderLibraryScreen();
-    default:
-      return "";
-  }
+function renderErrorState() {
+  return `
+    <section class="search-screen">
+      <div class="search-stack">
+        <article class="search-card">
+          <div class="notification-head">
+            <div class="header-logo">${renderMark()}</div>
+            <div>
+              <p class="search-kicker">تعذر التشغيل</p>
+              <h1 class="search-title">هناك مشكلة في التحميل</h1>
+              <p class="search-copy">${escapeHtml(state.error)}</p>
+            </div>
+          </div>
+        </article>
+      </div>
+    </section>
+  `;
 }
 
 function renderHomeScreen() {
-  const daily = featuredHadith(state.records, state.now);
-  const bookmarked = bookmarkedRecords().slice(0, 2);
-
   return `
-    <section class="screen">
-      <header class="top-header">
-        <div>
-          <p class="kicker">Hadith reader</p>
-          <h1 class="large-title">مجتهد</h1>
-          <p class="support-copy">A hadith-first reading experience built around Sahih al-Bukhari and Sahih Muslim.</p>
-        </div>
-        <button class="circle-action" data-action="open-sheet" data-value="notifications" aria-label="Open hadith reminders">${renderIcon("bell")}</button>
+    <section class="home-screen">
+      <header class="overlay-header">
+        <button class="header-button" data-action="open-notifications" aria-label="إعدادات التذكير">${renderIcon("bell")}</button>
+        <div class="header-logo" aria-hidden="true">${renderMark()}</div>
+        <button class="header-button" data-action="open-search" aria-label="فتح البحث">${renderIcon("search")}</button>
       </header>
 
-      <article class="reading-card">
-        <div class="reading-head">
-          <div>
-            <p class="card-label">Daily hadith</p>
-            <h2 class="card-title">${escapeHtml(daily.displayTitle)}</h2>
-            <p class="card-copy">${escapeHtml(daily.chapterTitle)}</p>
-          </div>
-          <button class="trailing-action" data-action="toggle-bookmark" data-id="${daily.id}" aria-label="Save daily hadith">
-            ${state.bookmarks.includes(daily.id) ? renderIcon("saved") : renderIcon("save")}
-          </button>
-        </div>
-        <div class="badge-row">
-          <span class="badge accent">${escapeHtml(daily.collectionDisplay)}</span>
-          <span class="badge success">Sahih</span>
-          <span class="badge gold">Verified references</span>
-        </div>
-        <p class="hadith-arabic">${escapeHtml(daily.arabicText)}</p>
-        <p class="hadith-english">${escapeHtml(daily.englishText)}</p>
-        <div class="action-row">
-          <button class="primary-button" data-action="open-hadith" data-id="${daily.id}">Open hadith</button>
-          <button class="secondary-button" data-action="open-sheet" data-value="trust">How we verify</button>
-        </div>
-      </article>
+      <div class="feed-progress" aria-hidden="true">
+        ${state.feed.map((_, index) => `<span class="feed-dot ${state.activeFeedIndex === index ? "active" : ""}"></span>`).join("")}
+      </div>
 
-      <section class="section-block">
-        <div class="section-header">
-          <div>
-            <h2 class="section-title">Collections</h2>
-            <p class="section-note">Keep the product focused on trusted hadith sources, not extra utilities.</p>
-          </div>
-        </div>
-        <div class="mini-collections">
-          ${renderCollectionCard("bukhari")}
-          ${renderCollectionCard("muslim")}
-        </div>
-      </section>
+      <div class="feed-shell" id="feed-shell">
+        ${state.feed.map((record, index) => renderFeedSlide(record, index)).join("")}
+      </div>
 
-      <section class="section-block">
-        <div class="section-header">
-          <div>
-            <h2 class="section-title">Preferences</h2>
-            <p class="section-note">Trust center, reminders, and saved reading in one place.</p>
-          </div>
-        </div>
-        <div class="group-card">
-          ${renderGroupRow("Reminders", reminderSummary(), "Choose how often the app should surface a hadith.", "open-sheet", "notifications", renderIcon("bell-small"))}
-          ${renderGroupRow("How we verify", "Sources and boundaries", "Canonical text, editorial metadata, and trusted references.", "open-sheet", "trust", renderIcon("shield"))}
-        </div>
-      </section>
-
-      <section class="section-block">
-        <div class="section-header">
-          <div>
-            <h2 class="section-title">Continue reading</h2>
-            <p class="section-note">Saved hadith stay local on this device.</p>
-          </div>
-        </div>
-        ${bookmarked.length ? `<div class="library-stack">${bookmarked.map((record) => renderSavedCard(record)).join("")}</div>` : `<div class="empty-state">Save hadith as you browse and they will appear here for fast return reading.</div>`}
-      </section>
+      <div class="feed-hint" aria-hidden="true">${renderIcon("swipe")}<span>اسحب للأعلى</span></div>
     </section>
+  `;
+}
+
+function renderFeedSlide(record, index) {
+  const favorite = state.favorites.includes(record.id);
+  return `
+    <article class="feed-slide ${state.activeFeedIndex === index ? "is-active" : ""}" data-feed-index="${index}" data-theme="${index % 5}" id="feed-${escapeAttribute(record.id)}">
+      <div class="feed-theme"></div>
+      <div class="feed-stage">
+        <div class="feed-card">
+          <div class="feed-topline">
+            <span class="collection-pill">${escapeHtml(record.collectionLabel)}</span>
+            <span class="source-pill">حديث ${escapeHtml(record.hadithNumber)}</span>
+          </div>
+          <p class="feed-meta">عن ${escapeHtml(record.narratorArabic)}</p>
+          <p class="feed-arabic">${escapeHtml(record.arabicText)}</p>
+          <p class="feed-english">${escapeHtml(record.englishText)}</p>
+          <div class="feed-bottom">
+            <span class="narrator-pill">المصدر الخارجي: الدرر السنية</span>
+            <button class="source-button" data-action="open-source" data-id="${record.id}">
+              ${renderIcon("source")}
+              <span>افتح المصدر</span>
+            </button>
+          </div>
+        </div>
+
+        <aside class="feed-actions" aria-label="أوامر الحديث">
+          <button class="feed-action" data-action="toggle-favorite" data-id="${record.id}" aria-label="إضافة للمفضلة">
+            ${favorite ? renderIcon("heartFilled") : renderIcon("heart")}
+            <span>${favorite ? "محفوظ" : "فضّل"}</span>
+          </button>
+          <button class="feed-action" data-action="share-hadith" data-id="${record.id}" aria-label="مشاركة الحديث">
+            ${renderIcon("share")}
+            <span>شارك</span>
+          </button>
+          <button class="feed-action" data-action="copy-hadith" data-id="${record.id}" aria-label="نسخ الحديث">
+            ${renderIcon("copy")}
+            <span>انسخ</span>
+          </button>
+          <button class="feed-action" data-action="open-source" data-id="${record.id}" aria-label="فتح المصدر الموثوق">
+            ${renderIcon("compass")}
+            <span>المصدر</span>
+          </button>
+        </aside>
+      </div>
+    </article>
   `;
 }
 
 function renderSearchScreen() {
-  const results = searchRecords(state.records, state.searchQuery, state.searchCollection);
-
   return `
-    <section class="screen">
-      <header class="top-header">
-        <div>
-          <p class="kicker">Search</p>
-          <h1 class="large-title">Find a hadith</h1>
-          <p class="support-copy">Search Arabic, English, narrator, chapter, or collection without leaving the reading flow.</p>
-        </div>
-      </header>
-
-      <section class="search-shell">
-        <label class="search-bar" aria-label="Search hadith">
-          <span class="search-icon">${renderIcon("search")}</span>
-          <input id="search-field" type="text" placeholder="Search Arabic, English, narrator, chapter" value="${escapeAttribute(state.searchQuery)}">
-          ${state.searchQuery ? `<button class="search-clear" data-action="clear-search" aria-label="Clear search">${renderIcon("close")}</button>` : ""}
-        </label>
-        <div class="filter-strip">
-          ${COLLECTIONS.map((collection) => renderFilterChip(collection.id, collection.label)).join("")}
-        </div>
-        <button class="inline-button" data-action="apply-search">Search hadith</button>
-      </section>
-
-      <section class="section-block">
-        <div class="section-header">
-          <div>
-            <h2 class="section-title">Results</h2>
-            <p class="section-note">${results.length} matches</p>
+    <section class="search-screen">
+      <div class="search-stack">
+        <article class="search-card">
+          <div class="notification-head">
+            <div class="header-logo" aria-hidden="true">${renderMark()}</div>
+            <div>
+              <p class="search-kicker">بحث مباشر</p>
+              <h1 class="search-title">ابحث في الحديث</h1>
+              <p class="search-copy">هذه الصفحة تستدعي نتائج مباشرة من الموسوعة الحديثية في الدرر السنية، ثم تفتح المصدر الخارجي فور اختيار الحديث.</p>
+            </div>
           </div>
-        </div>
-        ${results.length ? `<div class="result-stack">${results.map((record) => renderResultCard(record)).join("")}</div>` : `<div class="empty-state">Start with a word, narrator name, or collection title. The prototype searches both Arabic and English fields.</div>`}
-      </section>
+
+          <label class="search-field" aria-label="البحث في الحديث">
+            <span aria-hidden="true">${renderIcon("search")}</span>
+            <input id="search-field" type="text" placeholder="اكتب لفظة، أو جزءًا من الحديث" value="${escapeAttribute(state.searchQuery)}">
+            ${state.searchQuery ? `<button class="close-button" data-action="clear-search" aria-label="مسح البحث">${renderIcon("close")}</button>` : ""}
+          </label>
+
+          <div class="search-actions">
+            <button class="search-submit" data-action="search-submit">
+              ${renderIcon("spark")}
+              <span>${state.searching ? "جارٍ البحث..." : "ابدأ البحث"}</span>
+            </button>
+            <button class="inline-chip" data-action="quick-search" data-value="الأعمال بالنيات">الأعمال بالنيات</button>
+            <button class="inline-chip" data-action="quick-search" data-value="بني الإسلام على خمس">بني الإسلام على خمس</button>
+          </div>
+        </article>
+
+        ${renderSearchBody()}
+      </div>
     </section>
   `;
 }
 
-function renderVerifyScreen() {
-  const matches = verifyRecords(state.records, state.verifyText);
+function renderSearchBody() {
+  if (state.searching) {
+    return `
+      <article class="empty-panel">
+        <p class="search-kicker">بحث حي</p>
+        <h2 class="search-title">نبحث الآن</h2>
+        <p class="empty-copy">جارٍ جلب النتائج من الدرر السنية...</p>
+      </article>
+    `;
+  }
 
-  return `
-    <section class="screen">
-      <header class="top-header">
-        <div>
-          <p class="kicker">Verify</p>
-          <h1 class="large-title">Check a snippet</h1>
-          <p class="support-copy">Paste Arabic or English text to test the verification flow and source presentation.</p>
-        </div>
-      </header>
+  if (state.searchError) {
+    return `
+      <article class="empty-panel">
+        <p class="search-kicker">تعذر البحث</p>
+        <h2 class="search-title">النتائج لم تصل</h2>
+        <p class="empty-copy">${escapeHtml(state.searchError)}</p>
+      </article>
+    `;
+  }
 
-      <section class="verify-box">
-        <textarea id="verify-field" placeholder="Paste a hadith phrase to compare it against the trusted bundle...">${escapeHtml(state.verifyText)}</textarea>
-        <div class="verify-meta">
-          <span>Longer phrases produce cleaner matches.</span>
-          <button class="inline-button" data-action="fill-daily-hadith">Use daily hadith</button>
-        </div>
-        <div class="action-row">
-          <button class="primary-button" data-action="apply-verify">Find matches</button>
-          <button class="secondary-button" data-action="open-sheet" data-value="trust">See trust rules</button>
-        </div>
-      </section>
+  if (!state.lastSearch) {
+    return `
+      <article class="empty-panel">
+        <p class="search-kicker">جاهز</p>
+        <h2 class="search-title">ابدأ من كلمة واحدة</h2>
+        <p class="empty-copy">اكتب جزءًا من الحديث، وستظهر لك نتائج حيّة من مصدر موثوق بدل بطاقات تجريبية ثابتة.</p>
+      </article>
+    `;
+  }
 
-      <section class="section-block">
-        <div class="section-header">
-          <div>
-            <h2 class="section-title">Matches</h2>
-            <p class="section-note">${matches.length ? `${matches.length} likely matches` : "No strong match yet"}</p>
-          </div>
+  if (!state.searchResults.length) {
+    return `
+      <article class="empty-panel">
+        <p class="search-kicker">لا توجد مطابقة واضحة</p>
+        <h2 class="search-title">جرّب صياغة أخرى</h2>
+        <p class="empty-copy">لم يظهر شيء واضح لعبارة «${escapeHtml(state.lastSearch)}». جرّب جزءًا أقصر أو افتح البحث الخارجي مباشرة.</p>
+        <div class="search-actions">
+          <button class="search-submit" data-action="open-source" data-value="${escapeAttribute(state.lastSearch)}">${renderIcon("source")}<span>افتح الدرر السنية</span></button>
         </div>
-        ${matches.length ? `<div class="result-stack">${matches.map((item) => renderVerificationCard(item)).join("")}</div>` : `<div class="empty-state">Paste a hadith phrase, then compare the source details and references before treating a match as trusted.</div>`}
-      </section>
-    </section>
-  `;
+      </article>
+    `;
+  }
+
+  return `<div class="search-results">${state.searchResults.map(renderSearchResult).join("")}</div>`;
 }
 
-function renderLibraryScreen() {
-  const saved = bookmarkedRecords();
-
+function renderSearchResult(result) {
   return `
-    <section class="screen">
-      <header class="top-header">
+    <article class="search-result">
+      <div class="result-meta">
         <div>
-          <p class="kicker">Library</p>
-          <h1 class="large-title">Saved reading</h1>
-          <p class="support-copy">Bookmarks, reminder preferences, and the trust center live here without cluttering the main experience.</p>
+          <p class="result-title">${escapeHtml(result.source || "الموسوعة الحديثية")}</p>
+          <p class="result-label">${escapeHtml(result.narrator || "راوٍ غير محدد")}</p>
         </div>
-      </header>
-
-      <section class="section-block">
-        <div class="section-header">
-          <div>
-            <h2 class="section-title">Saved hadith</h2>
-            <p class="section-note">${saved.length} in your local library</p>
-          </div>
+        ${result.grade ? `<span class="source-pill">${escapeHtml(result.grade)}</span>` : ""}
+      </div>
+      <p class="result-arabic">${escapeHtml(result.text)}</p>
+      <div class="result-footer">
+        <div>
+          ${result.scholar ? `<p class="result-info">المحدّث: ${escapeHtml(result.scholar)}</p>` : ""}
+          ${result.page ? `<p class="result-info">الموضع: ${escapeHtml(result.page)}</p>` : ""}
         </div>
-        ${saved.length ? `<div class="library-stack">${saved.map((record) => renderSavedCard(record)).join("")}</div>` : `<div class="empty-state">When you save a hadith, it stays on this device and shows up here for later study.</div>`}
-      </section>
-
-      <section class="section-block">
-        <div class="section-header">
-          <div>
-            <h2 class="section-title">Preferences</h2>
-            <p class="section-note">Keep the app hadith-only while still giving users useful control.</p>
-          </div>
-        </div>
-        <div class="group-card">
-          ${renderGroupRow("Hadith reminders", reminderSummary(), "Permission, frequency, and a test reminder.", "open-sheet", "notifications", renderIcon("bell-small"))}
-          ${renderGroupRow("How we verify", `v${escapeHtml(state.manifest.version)}`, "Canonical collections and editorial boundaries.", "open-sheet", "trust", renderIcon("shield"))}
-        </div>
-      </section>
-    </section>
+        <button class="result-link" data-action="open-source" data-value="${escapeAttribute(result.url)}">${renderIcon("source")}<span>افتح المصدر</span></button>
+      </div>
+    </article>
+  `;
+}
+function renderFloatingNav() {
+  return `
+    <nav class="floating-nav" aria-label="التنقل الرئيسي">
+      <button class="nav-button ${state.tab === "home" ? "active" : ""}" data-action="switch-tab" data-value="home">
+        ${renderIcon("home")}
+        <span>الرئيسية</span>
+      </button>
+      <button class="nav-button ${state.tab === "search" ? "active" : ""}" data-action="switch-tab" data-value="search">
+        ${renderIcon("search")}
+        <span>البحث</span>
+      </button>
+    </nav>
   `;
 }
 
@@ -485,328 +457,310 @@ function renderSheet() {
 }
 
 function renderSheetBody() {
-  switch (state.sheet?.type) {
-    case "hadith":
-      return renderHadithSheet(state.sheet.id);
-    case "trust":
-      return renderTrustSheet();
-    case "notifications":
-      return renderNotificationsSheet();
-    default:
-      return "";
-  }
-}
-
-function renderHadithSheet(id) {
-  const match = state.records.find((item) => item.id === id);
-  const record = match ? enrichRecord(match) : featuredHadith(state.records, state.now);
-  const references = record.scholarReferences || [];
-
-  return `
-    <header class="sheet-header">
-      <div>
-        <h2 class="sheet-title">${escapeHtml(record.collectionDisplay)}</h2>
-        <p class="sheet-subtitle">Hadith ${record.hadithNumber} · ${escapeHtml(record.chapterTitle)}</p>
-      </div>
-      <button class="close-button" data-action="close-sheet" aria-label="Close sheet">${renderIcon("close")}</button>
-    </header>
-
-    <section class="detail-card">
-      <div class="reading-head">
-        <div>
-          <p class="card-label">Narrated by ${escapeHtml(record.narrator)}</p>
-          <h3 class="card-title">${escapeHtml(record.bookTitle)}</h3>
-        </div>
-        <button class="trailing-action" data-action="toggle-bookmark" data-id="${record.id}" aria-label="Save hadith">
-          ${state.bookmarks.includes(record.id) ? renderIcon("saved") : renderIcon("save")}
-        </button>
-      </div>
-      <div class="badge-row">
-        <span class="badge accent">${escapeHtml(record.collectionDisplay)}</span>
-        <span class="badge success">${escapeHtml(record.grade)}</span>
-        <span class="badge neutral">#${record.globalNumber}</span>
-      </div>
-      <p class="hadith-arabic">${escapeHtml(record.arabicText)}</p>
-      <p class="hadith-english">${escapeHtml(record.englishText)}</p>
-    </section>
-
-    <section class="info-card">
-      <div class="info-list">
-        ${renderInfoRow("Source edition", record.sourceEdition)}
-        ${renderInfoRow("Translation", record.translationSource)}
-        ${renderInfoRow("Verified at", formatDate(record.verifiedAt))}
-        ${renderInfoRow("Checksum", record.checksum)}
-      </div>
-    </section>
-
-    <section class="section-block">
-      <div class="section-header">
-        <div>
-          <h3 class="section-title">References</h3>
-          <p class="section-note">BinBaz is treated as a trust reference and Dorar as a methodology layer.</p>
-        </div>
-      </div>
-      ${references.length ? `<div class="reference-list">${references.map(renderReferenceCard).join("")}</div>` : `<div class="empty-state">This seed record does not have a linked external reference yet. The trust center still explains the verification boundaries for the bundle.</div>`}
-    </section>
-  `;
-}
-
-function renderTrustSheet() {
-  return `
-    <header class="sheet-header">
-      <div>
-        <h2 class="sheet-title">How we verify</h2>
-        <p class="sheet-subtitle">Clear boundaries matter more than decorative claims.</p>
-      </div>
-      <button class="close-button" data-action="close-sheet" aria-label="Close sheet">${renderIcon("close")}</button>
-    </header>
-
-    <section class="info-card">
-      <div class="info-list">
-        ${renderInfoRow("Canonical text", state.manifest.canonicalCollections.join(", "))}
-        ${renderInfoRow("Reference layer", state.manifest.verificationSources.join(", "))}
-        ${renderInfoRow("Content version", state.manifest.version)}
-        ${renderInfoRow("Updated", formatDate(state.manifest.updatedAt))}
-      </div>
-    </section>
-
-    <section class="detail-card">
-      <p class="card-label">Editorial boundary</p>
-      <h3 class="card-title">No AI interpretations in this prototype</h3>
-      <p class="card-copy">The bundle only presents canonical hadith text, editorial metadata, and clearly labeled external references. It does not generate new religious explanations.</p>
-    </section>
-
-    <section class="section-block">
-      <div class="section-header">
-        <div>
-          <h3 class="section-title">Notes</h3>
-          <p class="section-note">These notes come from the bundled content manifest.</p>
-        </div>
-      </div>
-      <div class="group-card">
-        ${state.manifest.notes.map((note) => `<div class="group-row"><div class="row-copy"><p class="row-title">${escapeHtml(note)}</p></div></div>`).join("")}
-      </div>
-    </section>
-
-    <section class="section-block">
-      <div class="section-header">
-        <div>
-          <h3 class="section-title">What is authoritative</h3>
-        </div>
-      </div>
-      <div class="group-card">
-        <div class="group-row">
-          <span class="row-icon">ق</span>
-          <div class="row-copy">
-            <p class="row-title">Canonical hadith text</p>
-            <p class="row-subtitle">Bukhari and Muslim are the reading core in this version.</p>
-          </div>
-        </div>
-        <div class="group-row">
-          <span class="row-icon">ب</span>
-          <div class="row-copy">
-            <p class="row-title">BinBaz</p>
-            <p class="row-subtitle">Used as a visible trust reference when presenting authenticity context.</p>
-          </div>
-        </div>
-        <div class="group-row">
-          <span class="row-icon">د</span>
-          <div class="row-copy">
-            <p class="row-title">Dorar</p>
-            <p class="row-subtitle">Used as an operational methodology and lookup layer where references are attached.</p>
-          </div>
-        </div>
-      </div>
-    </section>
-  `;
+  return state.sheet?.type === "notifications" ? renderNotificationsSheet() : "";
 }
 
 function renderNotificationsSheet() {
   const permission = state.notificationPermission;
-  const notificationSupported = isNotificationSupported();
 
   return `
     <header class="sheet-header">
       <div>
-        <h2 class="sheet-title">Hadith reminders</h2>
-        <p class="sheet-subtitle">Let the reader surface hadith at a rate the user actually wants.</p>
+        <h2 class="sheet-title">تنبيهات الأحاديث</h2>
+        <p class="sheet-copy">اختر الوتيرة التي تناسبك الآن. في نسخة الويب سيظهر التذكير عند السماح به وعند بقاء التطبيق نشطًا أو عند فتحه مجددًا.</p>
       </div>
-      <button class="close-button" data-action="close-sheet" aria-label="Close sheet">${renderIcon("close")}</button>
+      <button class="close-button" data-action="close-sheet" aria-label="إغلاق">${renderIcon("close")}</button>
     </header>
 
-    <section class="preference-panel">
-      <div class="preference-card">
-        <div class="switch-row">
-          <div class="switch-copy">
-            <strong>Enable reminders</strong>
-            <span>Choose whether the app should deliver hadith reminders at your selected rate.</span>
+    <section class="notification-stack">
+      <article class="notification-card">
+        <div class="notification-row">
+          <div class="notification-head">
+            <div class="notification-icon">${renderIcon("bell")}</div>
+            <div>
+              <h3 class="notification-title">تفعيل التذكير</h3>
+              <p class="notification-copy">زر واحد لتشغيل أو إيقاف تنبيهات الحديث.</p>
+            </div>
           </div>
-          <button class="switch ${state.notifications.enabled ? "on" : ""}" data-action="toggle-reminders" aria-label="Toggle hadith reminders"></button>
+          <button class="switch ${state.notifications.enabled ? "on" : ""}" data-action="toggle-reminders" aria-label="تفعيل التذكير"></button>
         </div>
-      </div>
+      </article>
 
-      <div class="preference-card">
-        <div class="switch-row">
-          <div class="switch-copy">
-            <strong>Notification permission</strong>
-            <span>Installed web apps on iPhone can request notification permission, but this prototype still has browser limits.</span>
+      <article class="notification-card">
+        <div class="notification-row">
+          <div>
+            <h3 class="notification-title">حالة الإذن</h3>
+            <p class="notification-copy">اسمح بالإشعارات أولًا ليتمكن التطبيق من إرسال التنبيه.</p>
           </div>
           <span class="permission-pill ${permission}">${escapeHtml(permissionLabel(permission))}</span>
         </div>
-        <div class="badge-row">
-          <button class="secondary-button" data-action="request-notifications" ${notificationSupported ? "" : "disabled"}>Allow notifications</button>
-          <button class="secondary-button" data-action="send-test-notification" ${permission === "granted" ? "" : "disabled"}>Send test</button>
+        <div class="search-actions">
+          <button class="segment-chip" data-action="request-notifications">السماح بالإشعارات</button>
+          <button class="segment-chip" data-action="send-test-notification" ${permission === "granted" ? "" : "disabled"}>إرسال تجربة</button>
         </div>
-      </div>
+      </article>
 
-      <div class="preference-card">
-        <div class="switch-copy">
-          <strong>Reminder rate</strong>
-          <span>Keep the schedule simple so it is easy to validate before moving back to native iOS.</span>
-        </div>
-        <div class="segment-strip" style="margin-top: 14px;">
+      <article class="notification-card">
+        <h3 class="notification-title">معدل الإرسال</h3>
+        <p class="notification-copy">كلما كان المعدل أهدأ، بدت التجربة أقرب لتطبيق مصقول لا يزعج المستخدم.</p>
+        <div class="segment-row" style="margin-top: 12px;">
           ${REMINDER_OPTIONS.map((option) => renderFrequencyChip(option)).join("")}
         </div>
-      </div>
-
-      <div class="preference-card">
-        <p class="note">Prototype limitation: this hosted web build can request permission and fire reminder notifications while the installed app is open or reopened, but true native-style background local scheduling will come in the native iOS build.</p>
-      </div>
+      </article>
     </section>
   `;
 }
 
-function renderCollectionCard(collectionId) {
-  const records = state.records.filter((record) => record.collection === collectionId);
-  const latest = records[0];
-
-  return `
-    <button class="collection-card" data-action="jump-collection" data-value="${collectionId}">
-      <p class="card-label">Collection</p>
-      <strong>${escapeHtml(collectionDisplay(collectionId))}</strong>
-      <span>${records.length} seed hadith${records.length === 1 ? "" : "s"}</span>
-      <span>${latest ? escapeHtml(latest.bookTitle) : "Ready for reading"}</span>
-    </button>
-  `;
-}
-
-function renderGroupRow(title, value, subtitle, action, sheetValue, iconMarkup) {
-  return `
-    <button class="group-row" data-action="${action}" data-value="${sheetValue}">
-      <span class="row-icon">${iconMarkup}</span>
-      <div class="row-copy">
-        <p class="row-title">${escapeHtml(title)}</p>
-        <p class="row-subtitle">${escapeHtml(subtitle)}</p>
-      </div>
-      <span class="row-value">${escapeHtml(value)}</span>
-      <span class="disclosure">${renderIcon("chevron")}</span>
-    </button>
-  `;
-}
-
-function renderResultCard(record) {
-  return `
-    <article class="result-card">
-      <div class="result-main">
-        <button class="result-symbol" data-action="open-hadith" data-id="${record.id}" aria-label="Open hadith">${record.collection === "bukhari" ? "ب" : "م"}</button>
-        <button class="result-text" data-action="open-hadith" data-id="${record.id}" aria-label="Open hadith">
-          <h3 class="result-title">${escapeHtml(record.chapterTitle)}</h3>
-          <p class="result-meta">${escapeHtml(record.collectionDisplay)} · ${escapeHtml(record.narrator)}</p>
-          <p class="result-arabic">${escapeHtml(trimText(record.arabicText, 120))}</p>
-        </button>
-        <button class="row-save" data-action="toggle-bookmark" data-id="${record.id}" aria-label="Save hadith">${state.bookmarks.includes(record.id) ? renderIcon("saved") : renderIcon("save")}</button>
-      </div>
-    </article>
-  `;
-}
-
-function renderVerificationCard(item) {
-  return `
-    <article class="result-card">
-      <div class="result-main">
-        <button class="result-symbol" data-action="open-hadith" data-id="${item.record.id}" aria-label="Open hadith">${Math.round(item.score * 100)}</button>
-        <button class="result-text" data-action="open-hadith" data-id="${item.record.id}" aria-label="Open hadith">
-          <h3 class="result-title">${escapeHtml(item.record.collectionDisplay)} · Hadith ${item.record.hadithNumber}</h3>
-          <p class="result-meta">${escapeHtml(item.record.chapterTitle)} · Score ${Math.round(item.score * 100)}%</p>
-          <p class="result-arabic">${escapeHtml(trimText(item.record.arabicText, 120))}</p>
-        </button>
-        <button class="row-save" data-action="toggle-bookmark" data-id="${item.record.id}" aria-label="Save hadith">${state.bookmarks.includes(item.record.id) ? renderIcon("saved") : renderIcon("save")}</button>
-      </div>
-    </article>
-  `;
-}
-
-function renderSavedCard(record) {
-  return `
-    <article class="saved-card">
-      <div class="saved-main">
-        <button class="result-symbol" data-action="open-hadith" data-id="${record.id}" aria-label="Open hadith">${record.collection === "bukhari" ? "ب" : "م"}</button>
-        <button class="saved-text" data-action="open-hadith" data-id="${record.id}" aria-label="Open hadith">
-          <h3 class="saved-title">${escapeHtml(record.displayTitle)}</h3>
-          <p class="saved-meta">${escapeHtml(record.collectionDisplay)} · ${escapeHtml(record.narrator)}</p>
-          <p class="saved-arabic">${escapeHtml(trimText(record.arabicText, 96))}</p>
-        </button>
-        <button class="row-save" data-action="toggle-bookmark" data-id="${record.id}" aria-label="Remove bookmark">${renderIcon("saved")}</button>
-      </div>
-    </article>
-  `;
-}
-
-function renderReferenceCard(reference) {
-  return `
-    <a class="reference-card" href="${escapeAttribute(reference.urlString)}" target="_blank" rel="noreferrer">
-      <strong>${escapeHtml(reference.title)}</strong>
-      <span>${escapeHtml(reference.summary || reference.referenceType)}</span>
-    </a>
-  `;
-}
-
-function renderInfoRow(label, value) {
-  return `
-    <div class="info-row">
-      <span class="info-label">${escapeHtml(label)}</span>
-      <span class="info-value">${escapeHtml(value)}</span>
-    </div>
-  `;
-}
-
-function renderTabButton(id, label, iconMarkup) {
-  return `
-    <button class="tab-button ${state.tab === id ? "active" : ""}" data-action="switch-tab" data-value="${id}" aria-label="${label}">
-      ${iconMarkup}
-      <span>${label}</span>
-    </button>
-  `;
-}
-
-function renderFilterChip(id, label) {
-  return `
-    <button class="filter-chip ${state.searchCollection === id ? "active" : ""}" data-action="set-collection" data-value="${id}">${escapeHtml(label)}</button>
-  `;
-}
-
 function renderFrequencyChip(option) {
-  return `
-    <button class="segment-chip ${state.notifications.frequency === option.id ? "active" : ""}" data-action="set-frequency" data-value="${option.id}">${escapeHtml(option.label)}</button>
-  `;
+  return `<button class="segment-chip ${state.notifications.frequency === option.id ? "active" : ""}" data-action="set-frequency" data-value="${option.id}">${escapeHtml(option.label)}</button>`;
 }
 
-function renderIcon(name) {
-  const icons = {
-    home: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4.5 10.2 12 4l7.5 6.2v8.3a1.5 1.5 0 0 1-1.5 1.5h-3.9v-5.1a2.1 2.1 0 0 0-4.2 0V20H6a1.5 1.5 0 0 1-1.5-1.5z" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
-    search: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5" stroke-linecap="round"/></svg>`,
-    verify: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 3.5 5.5 6.3v5.5c0 4.1 2.6 7.8 6.5 8.7 3.9-.9 6.5-4.6 6.5-8.7V6.3z" stroke-linejoin="round"/><path d="m9.4 11.8 1.9 1.9 3.6-4" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
-    library: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M5.5 5.5A2.5 2.5 0 0 1 8 3h9a2 2 0 0 1 2 2v14l-4-2-4 2-4-2-4 2V5.5a2.5 2.5 0 0 1 2.5-2.5Z" stroke-linejoin="round"/></svg>`,
-    bell: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M6.8 16.5h10.4l-1.1-1.8V10a4.1 4.1 0 0 0-8.2 0v4.7z" stroke-linejoin="round"/><path d="M10.2 18.2a1.9 1.9 0 0 0 3.6 0" stroke-linecap="round"/></svg>`,
-    "bell-small": `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M7.1 15.8h9.8l-1-1.6v-4a3.9 3.9 0 1 0-7.8 0v4z" stroke-linejoin="round"/><path d="M10.5 17.4a1.6 1.6 0 0 0 3 0" stroke-linecap="round"/></svg>`,
-    shield: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 3.5 5.8 6v5.4c0 4 2.5 7.4 6.2 8.3 3.7-.9 6.2-4.3 6.2-8.3V6z" stroke-linejoin="round"/><path d="m9.8 12.2 1.7 1.7 3-3.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
-    save: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M6 4.5h12a1.5 1.5 0 0 1 1.5 1.5v13l-7.5-4.1L4.5 19V6A1.5 1.5 0 0 1 6 4.5Z" stroke-linejoin="round"/></svg>`,
-    saved: `<svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor"><path d="M6 4.5h12A1.5 1.5 0 0 1 19.5 6v13L12 14.9 4.5 19V6A1.5 1.5 0 0 1 6 4.5Z"/></svg>`,
-    close: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m7 7 10 10M17 7 7 17" stroke-linecap="round"/></svg>`,
-    chevron: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m9 6 6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>`
-  };
+async function runSearch(query) {
+  const trimmed = String(query || "").trim();
+  state.searchQuery = trimmed;
+  state.lastSearch = trimmed;
+  state.searchError = "";
+  state.searchResults = [];
 
-  return icons[name] || "";
+  if (!trimmed) {
+    render();
+    return;
+  }
+
+  state.searching = true;
+  render();
+
+  try {
+    state.searchResults = await searchDorar(trimmed);
+  } catch (error) {
+    state.searchError = error.message || "تعذر الوصول إلى الدرر السنية الآن.";
+  } finally {
+    state.searching = false;
+    render();
+  }
+}
+
+function searchDorar(query) {
+  return new Promise((resolve, reject) => {
+    const callbackName = `__mujtahidDorar${Date.now()}${Math.floor(Math.random() * 1000)}`;
+    const script = document.createElement("script");
+    const timeoutId = window.setTimeout(() => {
+      cleanup();
+      reject(new Error("انتهت مهلة البحث قبل وصول النتائج."));
+    }, 12000);
+
+    function cleanup() {
+      window.clearTimeout(timeoutId);
+      delete window[callbackName];
+      script.remove();
+    }
+
+    window[callbackName] = (payload) => {
+      cleanup();
+      resolve(parseDorarPayload(payload, query));
+    };
+
+    script.onerror = () => {
+      cleanup();
+      reject(new Error("تعذر الاتصال بالمصدر الخارجي."));
+    };
+
+    script.src = `https://dorar.net/dorar_api.json?skey=${encodeURIComponent(query)}&callback=${callbackName}`;
+    document.body.appendChild(script);
+  });
+}
+
+function parseDorarPayload(payload, query) {
+  const html = payload?.ahadith?.result || "";
+  if (!html) {
+    return [];
+  }
+
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(`<div>${html}</div>`, "text/html");
+  const hadithNodes = [...doc.querySelectorAll(".hadith")];
+  const infoNodes = [...doc.querySelectorAll(".hadith-info")];
+  const parsed = hadithNodes
+    .map((node, index) => {
+      const text = cleanSearchText(node.textContent || "");
+      const info = parseHadithInfo(infoNodes[index]?.textContent || "");
+      return {
+        id: `${query}-${index}`,
+        text,
+        narrator: info.narrator,
+        scholar: info.scholar,
+        source: info.source,
+        page: info.page,
+        grade: info.grade,
+        url: buildSourceUrl(text || query)
+      };
+    })
+    .filter((item) => item.text);
+
+  const preferred = parsed.filter((item) => /صحيح البخاري|صحيح مسلم|صحيح الجامع|إسناده صحيح|\[صحيح\]|صحيح|حسن/i.test(`${item.source} ${item.grade}`));
+  return (preferred.length ? preferred : parsed).slice(0, 12);
+}
+
+function parseHadithInfo(raw) {
+  const text = normalizeSpace(raw);
+  return {
+    narrator: extractField(text, "الراوي:", "المحدث:"),
+    scholar: extractField(text, "المحدث:", "المصدر:"),
+    source: extractField(text, "المصدر:", "الصفحة أو الرقم:"),
+    page: extractField(text, "الصفحة أو الرقم:", "خلاصة حكم المحدث:"),
+    grade: extractField(text, "خلاصة حكم المحدث:", "")
+  };
+}
+
+function extractField(text, startLabel, endLabel) {
+  const startIndex = text.indexOf(startLabel);
+  if (startIndex < 0) {
+    return "";
+  }
+
+  const start = startIndex + startLabel.length;
+  const end = endLabel ? text.indexOf(endLabel, start) : -1;
+  return normalizeSpace(text.slice(start, end > -1 ? end : undefined));
+}
+
+function cleanSearchText(text) {
+  return normalizeSpace(text)
+    .replace(/^\d+\s*-\s*/, "")
+    .replace(/\s*\.\s*$/, "")
+    .replace(/\[يعني حديث:[^\]]+\]/g, "")
+    .trim();
+}
+
+function initializeHomeObserver() {
+  if (homeObserver) {
+    homeObserver.disconnect();
+    homeObserver = null;
+  }
+
+  if (state.tab !== "home") {
+    return;
+  }
+
+  const feedShell = root.querySelector("#feed-shell");
+  const slides = [...root.querySelectorAll(".feed-slide")];
+  if (!feedShell || !slides.length) {
+    return;
+  }
+
+  homeObserver = new IntersectionObserver((entries) => {
+    const visible = entries.filter((entry) => entry.isIntersecting).sort((left, right) => right.intersectionRatio - left.intersectionRatio)[0];
+    if (!visible) {
+      return;
+    }
+
+    const nextIndex = Number(visible.target.dataset.feedIndex || 0);
+    if (nextIndex !== state.activeFeedIndex) {
+      state.activeFeedIndex = nextIndex;
+      updateFeedActiveState();
+    }
+  }, { root: feedShell, threshold: 0.62 });
+
+  slides.forEach((slide) => homeObserver.observe(slide));
+  updateFeedActiveState();
+
+  if (launchScrollPending) {
+    launchScrollPending = false;
+    window.requestAnimationFrame(() => {
+      slides[state.activeFeedIndex]?.scrollIntoView({ block: "start", behavior: "auto" });
+    });
+  }
+}
+
+function updateFeedActiveState() {
+  root.querySelectorAll(".feed-slide").forEach((slide) => {
+    slide.classList.toggle("is-active", Number(slide.dataset.feedIndex || 0) === state.activeFeedIndex);
+  });
+
+  root.querySelectorAll(".feed-dot").forEach((dot, index) => {
+    dot.classList.toggle("active", index === state.activeFeedIndex);
+  });
+}
+function locateRecord(id) {
+  return state.feed.find((record) => record.id === id) || null;
+}
+
+function openSource(value) {
+  const url = /^https?:\/\//.test(String(value || "")) ? String(value) : buildSourceUrl(String(value || ""));
+  if (url) {
+    window.open(url, "_blank", "noopener");
+  }
+}
+
+async function shareHadith(record) {
+  if (!record) {
+    return;
+  }
+
+  const url = buildSourceUrl(record.sourceQuery || record.arabicText);
+  const text = buildShareText(record, url);
+
+  try {
+    if (navigator.share) {
+      await navigator.share({ title: "مجتهد", text, url });
+      showToast("تم فتح المشاركة");
+      return;
+    }
+  } catch {
+    return;
+  }
+
+  await copyText(text);
+  showToast("تم نسخ الحديث بدل المشاركة");
+}
+
+async function copyHadith(record) {
+  if (!record) {
+    return;
+  }
+
+  await copyText(buildShareText(record, buildSourceUrl(record.sourceQuery || record.arabicText)));
+  showToast("تم نسخ الحديث");
+}
+
+function buildShareText(record, url) {
+  return [
+    record.arabicText,
+    record.englishText,
+    `${record.collectionLabel} · حديث ${record.hadithNumber}`,
+    url
+  ].filter(Boolean).join("\n\n");
+}
+
+async function copyText(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const field = document.createElement("textarea");
+  field.value = text;
+  document.body.appendChild(field);
+  field.select();
+  document.execCommand("copy");
+  field.remove();
+}
+
+function toggleFavorite(id) {
+  const set = new Set(state.favorites);
+  if (set.has(id)) {
+    set.delete(id);
+    showToast("تمت إزالة الحديث من المفضلة");
+  } else {
+    set.add(id);
+    showToast("تم حفظ الحديث في المفضلة");
+  }
+  state.favorites = Array.from(set);
+  persistAppState();
+}
+
+function buildSourceUrl(query) {
+  const trimmed = String(query || "").trim();
+  return trimmed ? `https://dorar.net/hadith/search?st=w&q=${encodeURIComponent(trimmed)}` : "https://dorar.net/hadith/search";
 }
 
 function registerServiceWorker() {
@@ -831,123 +785,6 @@ function closeSheet() {
   state.sheet = null;
 }
 
-function toggleBookmark(id) {
-  const set = new Set(state.bookmarks);
-  if (set.has(id)) {
-    set.delete(id);
-    showToast("Removed from Library");
-  } else {
-    set.add(id);
-    showToast("Saved to Library");
-  }
-  state.bookmarks = Array.from(set);
-  persistAppState();
-}
-
-function bookmarkedRecords() {
-  const bookmarkedSet = new Set(state.bookmarks);
-  return state.records.filter((record) => bookmarkedSet.has(record.id)).map(enrichRecord);
-}
-
-function featuredHadith(records, date) {
-  const enriched = records.map(enrichRecord);
-  return enriched[dayOfYear(date) % enriched.length] || enriched[0];
-}
-
-function enrichRecord(record) {
-  return {
-    ...record,
-    collectionDisplay: collectionDisplay(record.collection),
-    displayTitle: `${collectionDisplay(record.collection)} · Hadith ${record.hadithNumber}`
-  };
-}
-
-function collectionDisplay(collection) {
-  return collection === "bukhari" ? "Sahih al-Bukhari" : "Sahih Muslim";
-}
-
-function searchRecords(records, query, collection) {
-  const normalizedQuery = normalizeText(query);
-  const filtered = records
-    .filter((record) => collection === "all" || record.collection === collection)
-    .map(enrichRecord);
-
-  if (!normalizedQuery) {
-    return filtered.slice(0, 6);
-  }
-
-  return filtered
-    .map((record) => {
-      const candidate = normalizeText([
-        record.arabicText,
-        record.englishText,
-        record.narrator,
-        record.chapterTitle,
-        record.bookTitle,
-        record.collectionDisplay
-      ].join(" "));
-      return { record, score: tokenScore(normalizedQuery, candidate) };
-    })
-    .filter((item) => item.score > 0.16)
-    .sort((left, right) => right.score - left.score)
-    .map((item) => item.record)
-    .slice(0, 10);
-}
-
-function verifyRecords(records, text) {
-  const normalizedQuery = normalizeText(text);
-  if (!normalizedQuery) {
-    return [];
-  }
-
-  return records
-    .map(enrichRecord)
-    .map((record) => {
-      const score = Math.max(
-        tokenScore(normalizedQuery, normalizeText(record.arabicText)),
-        tokenScore(normalizedQuery, normalizeText(record.englishText))
-      );
-      return { record, score };
-    })
-    .filter((item) => item.score > 0.18)
-    .sort((left, right) => right.score - left.score)
-    .slice(0, 8);
-}
-
-function tokenScore(query, candidate) {
-  if (!query || !candidate) {
-    return 0;
-  }
-
-  if (candidate.includes(query)) {
-    return 1;
-  }
-
-  const queryTokens = Array.from(new Set(query.split(" "))).filter(Boolean);
-  const candidateTokens = new Set(candidate.split(" "));
-  let shared = 0;
-
-  for (const token of queryTokens) {
-    if (candidateTokens.has(token)) {
-      shared += 1;
-    }
-  }
-
-  return shared / Math.max(1, queryTokens.length);
-}
-
-function reminderSummary() {
-  if (!state.notifications.enabled) {
-    return "Off";
-  }
-
-  return reminderOption(state.notifications.frequency).label;
-}
-
-function reminderOption(id) {
-  return REMINDER_OPTIONS.find((option) => option.id === id) || REMINDER_OPTIONS[0];
-}
-
 function isNotificationSupported() {
   return "Notification" in window;
 }
@@ -956,26 +793,25 @@ function notificationPermissionState() {
   if (!isNotificationSupported()) {
     return "unsupported";
   }
-
   return Notification.permission || "default";
 }
 
 function permissionLabel(permission) {
   switch (permission) {
     case "granted":
-      return "Allowed";
+      return "مسموح";
     case "denied":
-      return "Blocked";
+      return "محظور";
     case "unsupported":
-      return "Unavailable";
+      return "غير متاح";
     default:
-      return "Not allowed";
+      return "بانتظار السماح";
   }
 }
 
 async function requestNotificationPermission() {
   if (!isNotificationSupported()) {
-    showToast("Notifications are unavailable in this browser.");
+    showToast("هذا المتصفح لا يدعم الإشعارات");
     return;
   }
 
@@ -985,14 +821,14 @@ async function requestNotificationPermission() {
     if (permission === "granted") {
       state.notifications.enabled = true;
       persistAppState();
-      showToast("Reminders enabled");
+      showToast("تم تفعيل الإشعارات");
     } else if (permission === "denied") {
       state.notifications.enabled = false;
       persistAppState();
-      showToast("Notifications blocked");
+      showToast("تم رفض الإشعارات");
     }
   } catch {
-    showToast("Notification permission could not be requested");
+    showToast("تعذر طلب الإذن الآن");
   }
 }
 
@@ -1000,7 +836,7 @@ async function toggleReminders() {
   if (state.notifications.enabled) {
     state.notifications.enabled = false;
     persistAppState();
-    showToast("Reminders paused");
+    showToast("تم إيقاف التذكير");
     return;
   }
 
@@ -1011,17 +847,20 @@ async function toggleReminders() {
 
   state.notifications.enabled = true;
   persistAppState();
-  showToast("Reminders enabled");
+  showToast("تم تشغيل التذكير");
+}
+
+function reminderOption(id) {
+  return REMINDER_OPTIONS.find((option) => option.id === id) || REMINDER_OPTIONS[0];
 }
 
 async function maybeSendDueReminder() {
-  if (!state.records.length || !state.notifications.enabled || state.notificationPermission !== "granted") {
+  if (!state.feed.length || !state.notifications.enabled || state.notificationPermission !== "granted") {
     return false;
   }
 
   const frequency = reminderOption(state.notifications.frequency);
   const lastSentAt = state.notifications.lastSentAt ? new Date(state.notifications.lastSentAt) : null;
-
   if (lastSentAt && state.now.getTime() - lastSentAt.getTime() < frequency.intervalMs) {
     return false;
   }
@@ -1030,32 +869,28 @@ async function maybeSendDueReminder() {
 }
 
 async function sendReminderNotification({ test = false, force = false, quiet = false } = {}) {
-  if (!state.records.length || !isNotificationSupported() || state.notificationPermission !== "granted") {
+  if (!state.feed.length || !isNotificationSupported() || state.notificationPermission !== "granted") {
     if (!quiet) {
-      showToast("Allow notifications first");
+      showToast("اسمح بالإشعارات أولًا");
     }
     return false;
   }
 
-  const record = force ? featuredHadith(state.records, state.now) : featuredHadith(state.records, new Date());
-  const title = test ? "مجتهد · Test reminder" : "مجتهد · New hadith";
-  const body = trimText(record.arabicText, 88);
+  const record = force ? state.feed[state.activeFeedIndex] || state.feed[0] : state.feed[0];
+  const title = test ? "مجتهد · تنبيه تجريبي" : "مجتهد · حديث جديد";
   const options = {
-    body,
+    body: trimText(record.arabicText, 86),
     dir: "auto",
     lang: "ar",
     tag: test ? "mujtahid-test" : `hadith-${record.id}`,
     icon: "./assets/icon-192.png",
     badge: "./assets/icon-192.png",
-    data: {
-      hadithId: record.id,
-      url: `./?hadith=${record.id}`
-    }
+    data: { hadithId: record.id, url: `./?hadith=${record.id}` }
   };
 
   try {
     const registration = "serviceWorker" in navigator ? await navigator.serviceWorker.ready.catch(() => null) : null;
-    if (registration && registration.showNotification) {
+    if (registration?.showNotification) {
       await registration.showNotification(title, options);
     } else {
       new Notification(title, options);
@@ -1063,40 +898,27 @@ async function sendReminderNotification({ test = false, force = false, quiet = f
 
     state.notifications.lastSentAt = new Date().toISOString();
     persistAppState();
-
     if (!quiet) {
-      showToast(test ? "Test reminder sent" : "Reminder delivered");
+      showToast(test ? "تم إرسال تنبيه تجريبي" : "تم إرسال التذكير");
     }
-
     return true;
   } catch {
     if (!quiet) {
-      showToast("Reminder could not be delivered");
+      showToast("تعذر إرسال التذكير");
     }
     return false;
   }
 }
 
-function consumeLaunchHadith() {
-  if (!state.launchHadithId) {
-    return;
-  }
+function persistAppState() {
+  localStorage.setItem(STORAGE_KEYS.favorites, JSON.stringify(state.favorites));
+  localStorage.setItem(STORAGE_KEYS.notifications, JSON.stringify(state.notifications));
+}
 
-  const exists = state.records.some((record) => record.id === state.launchHadithId);
-  if (exists) {
-    state.sheet = { type: "hadith", id: state.launchHadithId };
-  }
-
+function clearLaunchQuery() {
   const url = new URL(window.location.href);
   url.searchParams.delete("hadith");
   history.replaceState({}, "", url);
-  state.launchHadithId = "";
-}
-
-function persistAppState() {
-  localStorage.setItem(STORAGE_KEYS.bookmarks, JSON.stringify(state.bookmarks));
-  localStorage.setItem(STORAGE_KEYS.notifications, JSON.stringify(state.notifications));
-  localStorage.setItem(STORAGE_KEYS.searchCollection, state.searchCollection);
 }
 
 function showToast(message) {
@@ -1109,33 +931,13 @@ function showToast(message) {
   render();
 }
 
-function formatDate(value) {
-  const date = new Date(value);
-  return new Intl.DateTimeFormat("en", {
-    month: "short",
-    day: "numeric",
-    year: "numeric"
-  }).format(date);
-}
-
-function normalizeText(input) {
-  return String(input || "")
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^\p{L}\p{N}\s]/gu, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+function normalizeSpace(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
 }
 
 function trimText(text, maxLength) {
   const value = String(text || "");
   return value.length <= maxLength ? value : `${value.slice(0, maxLength).trim()}...`;
-}
-
-function dayOfYear(date) {
-  const start = new Date(date.getFullYear(), 0, 0);
-  return Math.floor((date - start) / 86400000);
 }
 
 function loadJSON(key, fallback) {
@@ -1145,11 +947,6 @@ function loadJSON(key, fallback) {
   } catch {
     return fallback;
   }
-}
-
-function loadValue(key, fallback) {
-  const value = localStorage.getItem(key);
-  return value == null ? fallback : value;
 }
 
 function escapeHtml(value) {
@@ -1163,4 +960,48 @@ function escapeHtml(value) {
 
 function escapeAttribute(value) {
   return escapeHtml(value);
+}
+function renderMark() {
+  return `
+    <svg viewBox="0 0 96 96" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <rect x="4" y="4" width="88" height="88" rx="26" fill="url(#mark-bg)" stroke="url(#mark-stroke)" stroke-width="2.4"/>
+      <path d="M24 60.5 48 49l24 11.5" stroke="url(#mark-gold)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M31 60V39.5L48 47.5 65 39.5V60" stroke="url(#mark-gold)" stroke-width="4.2" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M48 25c4.4 0 7.8 4 7.8 9 0 7-7.8 13.8-7.8 13.8S40.2 41 40.2 34c0-5 3.4-9 7.8-9Z" fill="url(#mark-gold)"/>
+      <path d="M48 28.5c1.9 2.3 2.8 4.1 2.8 5.7 0 2.2-1.2 3.8-2.8 5.1-1.6-1.3-2.8-2.9-2.8-5.1 0-1.6.9-3.4 2.8-5.7Z" fill="#0c3548"/>
+      <defs>
+        <linearGradient id="mark-bg" x1="12" y1="10" x2="84" y2="88" gradientUnits="userSpaceOnUse">
+          <stop stop-color="#15506A"/>
+          <stop offset="1" stop-color="#082331"/>
+        </linearGradient>
+        <linearGradient id="mark-gold" x1="26" y1="26" x2="70" y2="72" gradientUnits="userSpaceOnUse">
+          <stop stop-color="#F4DEB0"/>
+          <stop offset="1" stop-color="#C99D55"/>
+        </linearGradient>
+        <linearGradient id="mark-stroke" x1="12" y1="8" x2="82" y2="90" gradientUnits="userSpaceOnUse">
+          <stop stop-color="#F2D8A4"/>
+          <stop offset="1" stop-color="#8E6B32"/>
+        </linearGradient>
+      </defs>
+    </svg>
+  `;
+}
+
+function renderIcon(name) {
+  const icons = {
+    home: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4.5 10.2 12 4l7.5 6.2v8.3a1.5 1.5 0 0 1-1.5 1.5h-3.9v-5.1a2.1 2.1 0 0 0-4.2 0V20H6a1.5 1.5 0 0 1-1.5-1.5z" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+    search: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5" stroke-linecap="round"/></svg>`,
+    bell: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M6.8 16.5h10.4l-1.1-1.8V10a4.1 4.1 0 0 0-8.2 0v4.7z" stroke-linejoin="round"/><path d="M10.2 18.2a1.9 1.9 0 0 0 3.6 0" stroke-linecap="round"/></svg>`,
+    source: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M10 14 20 4" stroke-linecap="round"/><path d="M14 4h6v6" stroke-linecap="round" stroke-linejoin="round"/><path d="M20 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h4" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+    share: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M15 8 9 12l6 4" stroke-linecap="round" stroke-linejoin="round"/><circle cx="18" cy="6" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="18" r="2.5"/></svg>`,
+    copy: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="8" y="8" width="10" height="12" rx="2"/><path d="M6 16H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+    heart: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 20.5s-7-4.4-7-10.2A4.3 4.3 0 0 1 9.3 6a4.7 4.7 0 0 1 2.7.9 4.7 4.7 0 0 1 2.7-.9A4.3 4.3 0 0 1 19 10.3c0 5.8-7 10.2-7 10.2Z" stroke-linejoin="round"/></svg>`,
+    heartFilled: `<svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor"><path d="M12 20.5s-7-4.4-7-10.2A4.3 4.3 0 0 1 9.3 6a4.7 4.7 0 0 1 2.7.9 4.7 4.7 0 0 1 2.7-.9A4.3 4.3 0 0 1 19 10.3c0 5.8-7 10.2-7 10.2Z"/></svg>`,
+    compass: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="8"/><path d="m9.2 14.8 1.8-5.4 5.4-1.8-1.8 5.4z" stroke-linejoin="round"/></svg>`,
+    close: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m7 7 10 10M17 7 7 17" stroke-linecap="round"/></svg>`,
+    spark: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 3.5 14.2 9l5.3 2.2-5.3 2.2L12 19l-2.2-5.6L4.5 11.2 9.8 9z" stroke-linejoin="round"/></svg>`,
+    swipe: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 19V5" stroke-linecap="round"/><path d="m7.5 9.5 4.5-4.5 4.5 4.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`
+  };
+
+  return icons[name] || "";
 }

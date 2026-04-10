@@ -5,4 +5,5 @@ build/
 *.xcodeproj
 !project.yml
 .edge-headless/
+.edge-headless-preview/
 web-prototype/assets/app-preview.png

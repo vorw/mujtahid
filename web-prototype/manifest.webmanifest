@@ -2,13 +2,15 @@
   "id": "./",
   "name": "مجتهد",
   "short_name": "مجتهد",
-  "description": "A hadith-first iPhone prototype focused on Sahih al-Bukhari and Sahih Muslim.",
+  "description": "تجربة أحاديث عربية بواجهة أقرب إلى تطبيق iPhone مع تنبيهات واختيارات فتح المصدر الموثوق.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#eef1f7",
-  "theme_color": "#eef1f7",
+  "background_color": "#031017",
+  "theme_color": "#0b2f3f",
+  "lang": "ar",
+  "dir": "rtl",
   "categories": ["education", "books", "reference"],
   "icons": [
     {
